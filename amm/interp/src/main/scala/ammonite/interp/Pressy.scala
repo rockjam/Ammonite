@@ -3,13 +3,14 @@ package ammonite.interp
 
 
 import ammonite.interp.Compiler.makeReporter
+import ammonite.runtime.ImportAutocomplete
 
-import scala.reflect.internal.util.{BatchSourceFile, OffsetPosition, Position}
+import scala.reflect.internal.util.{ BatchSourceFile, OffsetPosition, Position }
 import scala.reflect.io.VirtualDirectory
 import scala.tools.nsc
 import scala.tools.nsc.Settings
 import scala.tools.nsc.interactive.Response
-import scala.util.{Failure, Success, Try}
+import scala.util.{ Failure, Success, Try }
 import ammonite.util.Util.newLine
 /**
  * Nice wrapper for the presentation compiler.
@@ -30,6 +31,9 @@ object Pressy {
             currentFile: BatchSourceFile,
             allCode: String,
             index: Int){
+
+    println(s"=== all code: ${allCode}")
+    println(s"=== currentFile: ${currentFile}")
 
     /**
      * Dumb things that turn up in the autocomplete that nobody needs or wants
@@ -101,19 +105,22 @@ object Pressy {
     }
 
     def handleCompletion(r: List[pressy.Member], prefix: String) = pressy.ask{ () =>
+      println(s"r: ${r}")
+      println(s"prefix: ${prefix}")
       r.filter(_.sym.name.decoded.startsWith(prefix))
         .filter(m => !blacklisted(m.sym))
         .map{ x  =>
           (
             x.sym.name.decoded,
             if (x.sym.name.decoded != prefix) None
-            else Some(x.sym.defString)
+            else Some(x.sym.defString.toUpperCase())
           )
         }
     }
 
     def prefixed: (Int, Seq[(String, Option[String])]) = tree match {
       case t @ pressy.Select(qualifier, name) =>
+//        println(s"==== Select: ${t}")
 
         val dotOffset = if (qualifier.pos.point == t.pos.point) 0 else 1
 
@@ -129,27 +136,48 @@ object Pressy {
         }
 
       case t @ pressy.Import(expr, selectors)  =>
+        println(s"==== tree is : ${tree}")
+
+        println(s"\n==== Import: ${t}")
+        println(s"==== expr: ${expr}")
+        println(s"==== expr.tpe.toString: ${expr.tpe.toString}")
+        println(s"==== selectors: ${selectors}")
         // If the selectors haven't been defined yet...
-        if (selectors.head.name.toString == "<error>") {
+        if(t.toString().contains("$ivy")) {
+          println("==== caught $ivy import")
+          println(s"==== selectors.head.name.toString: ${selectors.head.name.toString}")
+          val found = ImportAutocomplete.complete(selectors.head.name.toString.trim.toLowerCase).map(_ -> Option.empty[String])
+          (expr.pos.start, found)
+        } else if (selectors.head.name.toString == "<error>") {
+          println("selectors.head.name.toString == \"<error>\"")
           if (expr.tpe.toString == "<error>") {
               // If the expr is badly typed, try to scope complete it
               if (expr.isInstanceOf[pressy.Ident]) {
                 val exprName =  expr.asInstanceOf[pressy.Ident].name.decoded
+                val members = ask(expr.pos.point, pressy.askScopeCompletion)
+                println(s"=== members: ${members}")
                 expr.pos.point -> handleCompletion(
-                  ask(expr.pos.point, pressy.askScopeCompletion),
+                  members,
                   // if it doesn't have a name at all, accept anything
                   if (exprName == "<error>") "" else exprName
                 )
               } else (expr.pos.point, Seq.empty)
           } else {
+            println(s"If the expr is well typed, type complete ${expr.pos.end}")
             // If the expr is well typed, type complete
             // the next thing
             handleTypeCompletion(expr.pos.end, "", 1)
           }
         }else {// I they're been defined, just use typeCompletion
+          val a = selectors.last.namePos
+          val b = selectors.last.name.decoded
+
+          println(s"==== just use typeCompletion: a: ${a}, b: ${b}")
           handleTypeCompletion(selectors.last.namePos, selectors.last.name.decoded, 0)
         }
       case t @ pressy.Ident(name) =>
+//        println(s"==== Ident: ${t}")
+
         lazy val shallow = handleCompletion(
           ask(index, pressy.askScopeCompletion),
           name.decoded
@@ -161,6 +189,8 @@ object Pressy {
         else (t.pos.end, deep :+ ("" -> None))
 
       case t =>
+//        println(s"==== Other: ${t}")
+
         val comps = ask(index, pressy.askScopeCompletion)
 
         index -> pressy.ask(() =>
@@ -207,6 +237,8 @@ object Pressy {
       val prefix = previousImports + newLine + "object AutocompleteWrapper{" + newLine
       val suffix = newLine + "}"
       val allCode = prefix + snippet + suffix
+
+      println(s"=== snippet is: ${snippet}")
       val index = snippetIndex + prefix.length
       if (cachedPressy == null) cachedPressy = initPressy
 
